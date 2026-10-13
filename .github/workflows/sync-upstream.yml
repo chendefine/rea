@@ -1,0 +1,64 @@
+name: Sync upstream
+
+on:
+  schedule:
+    # 00:00 Asia/Shanghai (cron runs in UTC).
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/morluto/rea.git
+  BRANCH: main
+
+jobs:
+  sync:
+    name: Sync branch and tags
+    # Only forks mirror upstream; the upstream repository itself has nothing to sync.
+    if: github.event.repository.fork
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN secret is missing. GITHUB_TOKEN cannot push upstream changes to .github/workflows; add a token with Contents and Workflows write access."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$BRANCH"
+          # Upstream owns its tags; replace any local tag with the same name.
+          git fetch --force upstream 'refs/tags/*:refs/tags/*'
+
+      - name: Merge upstream branch
+        run: |
+          if git merge-base --is-ancestor "upstream/$BRANCH" HEAD; then
+            echo "$BRANCH already contains upstream/$BRANCH"
+          elif git merge-base --is-ancestor HEAD "upstream/$BRANCH"; then
+            git merge --ff-only "upstream/$BRANCH"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git merge --no-edit "upstream/$BRANCH"
+          fi
+
+      - name: Push branch and tags
+        run: |
+          git push origin "HEAD:refs/heads/$BRANCH"
+          git push --force origin 'refs/tags/*:refs/tags/*'
